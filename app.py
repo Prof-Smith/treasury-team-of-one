@@ -1,136 +1,147 @@
 from pathlib import Path
-import io
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from engine import load_truth_set, calculate_forecast, scenario_summary, consolidated_snapshot, model_checks
+from engine import load_truth_set, calculate_forecast, scenario_summary, model_checks
 
-st.set_page_config(page_title='Monday-Morning Liquidity Command Center', page_icon='💧', layout='wide')
-BASE=Path(__file__).parent
-DEFAULT=BASE/'data'/'Monday_Morning_Liquidity_Clean_Truth_Set.xlsx'
-
-st.markdown('''<style>
-.block-container{padding-top:1.4rem;max-width:1450px}.hero{background:linear-gradient(135deg,#17365D,#275D8C);padding:1.25rem 1.5rem;border-radius:16px;color:white;margin-bottom:1rem}.hero h1{margin:0;font-size:2rem}.hero p{margin:.35rem 0 0;color:#DDEBF7}.status-ok{color:#107C10;font-weight:700}.status-warn{color:#B36B00;font-weight:700}.status-bad{color:#C00000;font-weight:700}.small{color:#666;font-size:.88rem}
+st.set_page_config(page_title='Treasury Team of One',page_icon='◈',layout='wide',initial_sidebar_state='expanded')
+BASE=Path(__file__).parent; DEFAULT=BASE/'data'/'Monday_Morning_Liquidity_Clean_Truth_Set.xlsx'
+COLORS={'navy':'#102A43','blue':'#186FAF','teal':'#00A6A6','amber':'#F2A900','red':'#D64545','green':'#16866B','ink':'#243B53','muted':'#627D98','bg':'#F4F7FA'}
+st.markdown(f'''<style>
+.stApp{{background:{COLORS['bg']}}}.block-container{{padding:1.15rem 2rem 3rem;max-width:1500px}}
+[data-testid="stSidebar"]{{background:#0F2740}}[data-testid="stSidebar"] *{{color:#F0F5FA!important}}
+.hero{{background:linear-gradient(120deg,#102A43,#166A8F);padding:1.4rem 1.6rem;border-radius:18px;color:white;box-shadow:0 10px 28px rgba(16,42,67,.15)}}
+.hero h1{{font-size:2.05rem;margin:0}}.hero p{{color:#D9EAF2;margin:.35rem 0 0}}
+.eyebrow{{text-transform:uppercase;letter-spacing:.11em;font-size:.72rem;font-weight:800;color:#00C2C7}}
+.card{{background:white;border:1px solid #D7E3EC;border-radius:14px;padding:1rem 1.15rem;box-shadow:0 3px 12px rgba(16,42,67,.06);height:100%}}
+.card h3{{font-size:1rem;margin:.1rem 0 .45rem;color:#243B53}}.card p{{font-size:.88rem;color:#627D98;margin:0}}
+.alert{{background:#FFF7E6;border-left:5px solid #F2A900;border-radius:10px;padding:.85rem 1rem;color:#243B53}}
+.danger{{background:#FFF0F0;border-left:5px solid #D64545;border-radius:10px;padding:.85rem 1rem}}
+.success{{background:#EAF8F4;border-left:5px solid #16866B;border-radius:10px;padding:.85rem 1rem}}
+.step{{font-size:.76rem;text-transform:uppercase;letter-spacing:.08em;color:#627D98;font-weight:800}}
+div[data-testid="stMetric"]{{background:white;border:1px solid #D7E3EC;padding:.75rem 1rem;border-radius:14px;box-shadow:0 3px 12px rgba(16,42,67,.05)}}
+div[data-testid="stMetricValue"]{{font-size:1.65rem}}.stButton>button{{border-radius:10px;font-weight:700}}
 </style>''',unsafe_allow_html=True)
 
-st.markdown('<div class="hero"><h1>Monday-Morning Liquidity Command Center</h1><p>The Treasury Team of One | Synthetic TBAFP demonstration</p></div>',unsafe_allow_html=True)
+for k,v in {'step':1,'decisions':{},'scenario':'Downside','funding':0.0}.items():
+    if k not in st.session_state: st.session_state[k]=v
+
+def hero(kicker,title,subtitle): st.markdown(f'<div class="hero"><div class="eyebrow">{kicker}</div><h1>{title}</h1><p>{subtitle}</p></div>',unsafe_allow_html=True)
+def money(v): return f'${v:,.0f}' if abs(v)<1_000_000 else f'${v/1_000_000:,.2f}M'
+def status_color(s): return COLORS['red'] if s=='NEGATIVE' else (COLORS['amber'] if s=='BELOW MINIMUM' else COLORS['green'])
 
 with st.sidebar:
-    st.header('Case controls')
-    uploaded=st.file_uploader('Upload revised truth-set workbook',type=['xlsx'])
-    page=st.radio('Workspace',['1. Monday Morning Inbox','2. Data Review','3. Liquidity Command Center','4. Scenario Laboratory','5. CFO Briefing','6. Model Controls'])
-    st.caption('No uploaded data are transmitted by this app. Calculations are deterministic.')
+    st.markdown('## Treasury Team of One')
+    st.caption('Monday-Morning Liquidity Problem')
+    uploaded=st.file_uploader('Use revised truth-set workbook',type=['xlsx'])
+    pages=['Inbox','Exception Review','Command Center','Scenario Lab','CFO Briefing','Controls']
+    page=st.radio('Workflow',pages,index=max(0,min(st.session_state.step-1,5)))
+    st.markdown('---'); st.caption('Synthetic case. Deterministic financial calculations. No transactions executed.')
 
-source=uploaded if uploaded is not None else DEFAULT
-try:
-    ts=load_truth_set(source)
-except Exception as e:
-    st.error(f'The workbook could not be loaded: {e}')
-    st.stop()
-forecast=calculate_forecast(ts)
-summary=scenario_summary(forecast,ts)
-checks=model_checks(ts,forecast)
+try: ts=load_truth_set(uploaded if uploaded else DEFAULT)
+except Exception as e: st.error(f'Workbook load error: {e}'); st.stop()
 
-if page.startswith('1.'):
-    st.subheader('Monday, 8:03 a.m.')
-    st.info('CFO directive: Keep every account positive and advise me of any liquidity concerns before the morning briefing.')
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric('Files received','8')
-    c2.metric('Control issues',len(ts.treatments))
-    c3.metric('Items requiring review',int(ts.treatments['Human Review Required?'].astype(str).eq('Y').sum()))
-    c4.metric('Forecast scenarios',len(ts.scenarios))
-    st.markdown('### What arrived')
-    inbox=pd.DataFrame([
-        ['Bank balances','Received','Duplicates, stale balance, unit anomaly'],['Entity forecasts','Received','Six structures, missing flow, stale forecast'],
-        ['AR expectations','Received','Duplicate invoice and timing risk'],['Disbursements','Received','Duplicate payroll, sign and date issues'],
-        ['Facilities','Received','Availability mismatch and borrower constraints'],['FX rates','Received','Stale, reciprocal, and outlier rates'],
-        ['Treasury policy','Received','Threshold and transfer rules'],['Account master','Received','Canonical account reference']],columns=['Submission','Status','Initial signal'])
-    st.dataframe(inbox,use_container_width=True,hide_index=True)
-    st.warning('Positive consolidated cash does not establish entity-level liquidity. The review must determine what is accurate, current, available, and decision-ready.')
+funding_actions={}
+fc=calculate_forecast(ts); summaries=scenario_summary(fc,ts); checks=model_checks(ts,fc)
 
-elif page.startswith('2.'):
-    st.subheader('Data Review and Accepted Treatments')
-    q1,q2,q3=st.columns(3)
-    q1.metric('Total issues',len(ts.treatments)); q2.metric('Human review',int(ts.treatments['Human Review Required?'].astype(str).eq('Y').sum())); q3.metric('Safe to automate',int(ts.treatments['Auto-Safe?'].astype(str).eq('Y').sum()))
-    classes=['All']+sorted(ts.treatments['Classification'].dropna().astype(str).unique().tolist())
-    chosen=st.selectbox('Filter by classification',classes)
-    view=ts.treatments if chosen=='All' else ts.treatments[ts.treatments['Classification']==chosen]
-    st.dataframe(view,use_container_width=True,hide_index=True,height=450)
-    st.markdown('**Control principle:** Safe formatting standardization may be automated. Material financial corrections remain proposed until treasury accepts, rejects, or edits them.')
+if page=='Inbox':
+    hero('08:03 AM | Monday','The files arrived. The answer did not.','Six entities, three currencies, recent acquisitions, and one instruction from the CFO.')
+    st.markdown('')
+    st.markdown('<div class="alert"><b>CFO directive:</b> Keep every account positive and bring me any liquidity concerns before the 9:30 briefing.</div>',unsafe_allow_html=True)
+    st.markdown('### Incoming treasury submissions')
+    cards=[('BANK BALANCES','12 accounts','Duplicate, stale balance, unit anomaly'),('ENTITY FORECASTS','6 formats','Missing payroll, stale assumptions'),('RECEIVABLES','8 items','Receipt timing and duplicate risk'),('DISBURSEMENTS','11 items','Duplicate payroll and sign error'),('FACILITIES','4 sources','Availability and borrower constraints'),('FX RATES','3 currencies','Stale and inconsistent quotes')]
+    cols=st.columns(3)
+    for i,(k,n,d) in enumerate(cards): cols[i%3].markdown(f'<div class="card"><div class="eyebrow">{k}</div><h3>{n}</h3><p>{d}</p></div>',unsafe_allow_html=True)
+    st.markdown('')
+    c1,c2,c3,c4=st.columns(4); c1.metric('Reported cash','$6.16M'); c2.metric('Restricted cash','$499K'); c3.metric('Known issues',len(ts.treatments)); c4.metric('Time to briefing','87 min')
+    st.markdown('<div class="card"><h3>The first question is not “How much cash do we have?”</h3><p>The first question is whether the submitted balances, forecasts, and funding sources are accurate, current, available, and decision-ready.</p></div>',unsafe_allow_html=True)
+    if st.button('Begin treasury review →',type='primary',use_container_width=True): st.session_state.step=2; st.rerun()
 
-elif page.startswith('3.'):
-    st.subheader('Liquidity Command Center')
-    scenario=st.selectbox('Scenario',['Reported','Downside','Stress'])
-    first=forecast['Date'].min(); snap=consolidated_snapshot(forecast,scenario,first)
-    scsum=summary[summary['Scenario']==scenario].iloc[0]
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric('Consolidated available cash',f"${snap['available_usd']/1_000_000:,.2f}M")
-    c2.metric('Entities below minimum',snap['entities_below_minimum'])
-    c3.metric('Gulf liquidity trough',f"${scsum['Lowest Cash']:,.0f}")
-    c4.metric('Gulf trough date',pd.Timestamp(scsum['Trough Date']).strftime('%b %d'))
-    g=forecast[forecast['Scenario']==scenario]
-    fig=px.line(g,x='Date',y='Ending Available (USD)',color='Entity',markers=True,title='Available cash by entity, translated to USD')
-    fig.update_layout(legend_title_text='',hovermode='x unified')
-    st.plotly_chart(fig,use_container_width=True)
-    latest=g[g['Date']==g['Date'].min()][['Entity','Ending Available (LCY)','Currency','Policy Minimum (LCY)','Surplus / (Shortfall)','Status']]
-    st.dataframe(latest,use_container_width=True,hide_index=True,column_config={'Ending Available (LCY)':st.column_config.NumberColumn(format='$%0.0f'),'Policy Minimum (LCY)':st.column_config.NumberColumn(format='$%0.0f'),'Surplus / (Shortfall)':st.column_config.NumberColumn(format='$%0.0f')})
+elif page=='Exception Review':
+    hero('STEP 1 | CONTROL THE INPUTS','Exception Review','Resolve the issues that can change the liquidity conclusion. Defer what still requires confirmation.')
+    issues=ts.treatments.copy(); resolved=len(st.session_state.decisions); total=len(issues)
+    c1,c2,c3,c4=st.columns(4); c1.metric('Resolved',f'{resolved}/{total}'); c2.metric('Human judgment',int(issues['Human Review Required?'].astype(str).eq('Y').sum())); c3.metric('Safe to automate',int(issues['Auto-Safe?'].astype(str).eq('Y').sum())); c4.metric('Control confidence',f'{55+int(40*resolved/max(total,1))}%')
+    idx=min(resolved,total-1) if total else 0
+    if total:
+        r=issues.iloc[idx]; iid=str(r['Issue ID'])
+        st.markdown(f'<div class="card"><div class="eyebrow">{r["Classification"]} | {iid}</div><h3>{r["Issue"]}</h3><p><b>Source:</b> {r["Source File"]}<br><b>Proposed treatment:</b> {r["Accepted Treatment"]}</p></div>',unsafe_allow_html=True)
+        a,b,c=st.columns(3)
+        if a.button('Accept treatment',type='primary',use_container_width=True): st.session_state.decisions[iid]='Accepted'; st.rerun()
+        if b.button('Defer for confirmation',use_container_width=True): st.session_state.decisions[iid]='Deferred'; st.rerun()
+        if c.button('Reject proposal',use_container_width=True): st.session_state.decisions[iid]='Rejected'; st.rerun()
+        st.progress(resolved/max(total,1))
+        with st.expander('View full issue register'):
+            view=issues.copy(); view['Decision']=view['Issue ID'].astype(str).map(st.session_state.decisions).fillna('Pending'); st.dataframe(view,use_container_width=True,hide_index=True)
+    if resolved>=min(4,total) and st.button('Continue to command center →',type='primary'): st.session_state.step=3; st.rerun()
 
-elif page.startswith('4.'):
-    st.subheader('Scenario Laboratory')
-    st.caption('Adjust the Orion receipt timing and optional shock. The core arithmetic remains deterministic.')
-    base=ts.scenarios.copy()
-    scenario=st.selectbox('Scenario to test',base['Scenario'].astype(str).tolist(),index=1)
-    row=base[base['Scenario'].astype(str)==scenario].iloc[0]
+elif page=='Command Center':
+    hero('STEP 2 | CREATE VISIBILITY','Liquidity Command Center','Consolidated liquidity looks healthy. Entity-level liquidity tells a different story.')
+    scenario=st.segmented_control('View scenario',['Reported','Downside','Stress'],default='Downside') or 'Downside'
+    g=fc[fc.Scenario==scenario]; gulf=g[g['Entity ID']=='E004']; trough=gulf.loc[gulf['Ending Available (LCY)'].idxmin()]
+    first=g[g.Date==g.Date.min()]
+    c1,c2,c3,c4,c5=st.columns(5)
+    c1.metric('Available cash',money(first['Ending Available (USD)'].sum()))
+    c2.metric('Restricted cash','$499K')
+    c3.metric('Gulf trough',money(trough['Ending Available (LCY)']))
+    c4.metric('Trough date',trough.Date.strftime('%b %d'))
+    c5.metric('Status',trough.Status)
+    st.markdown('<div class="danger"><b>Hidden exposure:</b> Consolidated liquidity remains positive while Gulf Components breaches policy and may become negative.</div>',unsafe_allow_html=True)
+    left,right=st.columns([1.65,1])
+    with left:
+        fig=go.Figure()
+        fig.add_trace(go.Scatter(x=gulf.Date,y=gulf['Ending Available (LCY)'],mode='lines+markers',line=dict(color=COLORS['teal'],width=4),marker=dict(size=8),name='Available cash',fill='tozeroy',fillcolor='rgba(0,166,166,.08)'))
+        fig.add_trace(go.Scatter(x=gulf.Date,y=gulf['Policy Minimum (LCY)'],mode='lines',line=dict(color=COLORS['amber'],dash='dash',width=2),name='Policy minimum'))
+        fig.add_hline(y=0,line_color=COLORS['red'],line_width=2); fig.add_annotation(x=trough.Date,y=trough['Ending Available (LCY)'],text=f'Trough: {money(trough["Ending Available (LCY)"])}',showarrow=True,arrowcolor=COLORS['red'])
+        fig.update_layout(title='Gulf Components forecast',height=430,hovermode='x unified',paper_bgcolor='white',plot_bgcolor='white',legend_orientation='h',margin=dict(l=20,r=20,t=55,b=20),yaxis_tickprefix='$',yaxis_tickformat=',.0f')
+        st.plotly_chart(fig,use_container_width=True)
+    with right:
+        ent=g.groupby(['Entity','Currency'],as_index=False).agg(Trough=('Ending Available (LCY)','min'),Minimum=('Policy Minimum (LCY)','first'))
+        ent['Risk']=ent.apply(lambda x:'NEGATIVE' if x.Trough<0 else ('BELOW MINIMUM' if x.Trough<x.Minimum else 'OK'),axis=1)
+        st.markdown('#### Entity risk map')
+        for _,r in ent.iterrows(): st.markdown(f'<div class="card" style="margin-bottom:.45rem;border-left:5px solid {status_color(r.Risk)}"><b>{r.Entity}</b><br><span style="color:#627D98">Trough {money(r.Trough)} {r.Currency} | {r.Risk}</span></div>',unsafe_allow_html=True)
+    if st.button('Open Scenario Laboratory →',type='primary'): st.session_state.step=4; st.rerun()
+
+elif page=='Scenario Lab':
+    hero('STEP 3 | TEST THE RESPONSE','Scenario Laboratory','Change the receipt timing, apply funding, and observe the liquidity consequence immediately.')
+    row=ts.scenarios.set_index('Scenario').loc['Downside']
     c1,c2,c3=st.columns(3)
-    receipt_date=c1.date_input('Orion receipt date',value=pd.Timestamp(row['Orion Receipt Date']).date())
-    receipt_amount=c2.number_input('Orion receipt amount',min_value=0.0,value=float(row['Orion Receipt Amount']),step=10000.0)
-    shock=c3.number_input('Additional Gulf payment',min_value=0.0,value=float(row['Unplanned Gulf Payment Amount']),step=10000.0)
-    custom=ts.scenarios.copy()
-    idx=custom['Scenario'].astype(str)==scenario
-    custom.loc[idx,'Orion Receipt Date']=pd.Timestamp(receipt_date); custom.loc[idx,'Orion Receipt Amount']=receipt_amount
-    custom.loc[idx,'Unplanned Gulf Payment Amount']=shock
-    if shock>0 and custom.loc[idx,'Unplanned Gulf Payment Date'].isna().all(): custom.loc[idx,'Unplanned Gulf Payment Date']=pd.Timestamp('2026-09-04')
-    original=ts.scenarios; ts.scenarios=custom; custom_fc=calculate_forecast(ts); ts.scenarios=original
-    gulf=custom_fc[(custom_fc['Scenario']==scenario)&(custom_fc['Entity ID']=='E004')]
-    fig=go.Figure(); fig.add_trace(go.Scatter(x=gulf['Date'],y=gulf['Ending Available (LCY)'],mode='lines+markers',name='Available cash'))
-    fig.add_trace(go.Scatter(x=gulf['Date'],y=gulf['Policy Minimum (LCY)'],mode='lines',name='Policy minimum',line=dict(dash='dash',color='#B36B00')))
-    fig.add_hline(y=0,line_color='#C00000',line_width=2)
-    fig.update_layout(title=f'Gulf Components: {scenario}',yaxis_title='Cash (USD)',hovermode='x unified')
-    st.plotly_chart(fig,use_container_width=True)
-    trough=gulf.loc[gulf['Ending Available (LCY)'].idxmin()]
-    a,b,c=st.columns(3); a.metric('Lowest cash',f"${trough['Ending Available (LCY)']:,.0f}"); b.metric('Trough date',trough['Date'].strftime('%b %d')); c.metric('Status',trough['Status'])
-    st.dataframe(gulf[['Date','Opening Available (LCY)','Ledger Net Flow (LCY)','Scenario Receipt (LCY)','Stress Payment (LCY)','Ending Available (LCY)','Status']],use_container_width=True,hide_index=True)
+    receipt_date=c1.date_input('Orion receipt date',pd.Timestamp(row['Orion Receipt Date']).date())
+    shock=c2.number_input('Additional unplanned payment',0.0,500000.0,float(row['Unplanned Gulf Payment Amount']),10000.0)
+    funding=c3.number_input('Approved funding action',0.0,1000000.0,float(st.session_state.funding),50000.0)
+    st.session_state.funding=funding
+    overrides={'Custom':{}}; temp=ts.scenarios.copy(); temp.loc[temp.Scenario=='Downside','Scenario']='Custom'; temp.loc[temp.Scenario=='Custom','Orion Receipt Date']=pd.Timestamp(receipt_date); temp.loc[temp.Scenario=='Custom','Unplanned Gulf Payment Date']=pd.Timestamp('2026-09-04') if shock>0 else pd.NaT; temp.loc[temp.Scenario=='Custom','Unplanned Gulf Payment Amount']=shock
+    old=ts.scenarios; ts.scenarios=temp
+    base_fc=calculate_forecast(ts)
+    gulf0=base_fc[(base_fc.Scenario=='Custom')&(base_fc['Entity ID']=='E004')]
+    trough0=gulf0.loc[gulf0['Ending Available (LCY)'].idxmin()]
+    if funding>0:
+        fund_date=trough0.Date; actions={f'Custom|E004|{fund_date.date().isoformat()}':funding}; custom_fc=calculate_forecast(ts,funding_actions=actions)
+    else: custom_fc=base_fc
+    ts.scenarios=old; gulf=custom_fc[(custom_fc.Scenario=='Custom')&(custom_fc['Entity ID']=='E004')]; trough=gulf.loc[gulf['Ending Available (LCY)'].idxmin()]
+    a,b,c,d=st.columns(4); a.metric('Liquidity trough',money(trough['Ending Available (LCY)'])); b.metric('Policy shortfall',money(min(0,trough['Surplus / (Shortfall)']))); c.metric('Local line available','$50,000'); d.metric('Remaining negative exposure',money(max(0,-trough['Ending Available (LCY)'])))
+    fig=go.Figure(); fig.add_trace(go.Scatter(x=gulf.Date,y=gulf['Ending Available (LCY)'],mode='lines+markers',line=dict(color=COLORS['blue'],width=4),name='Cash after action')); fig.add_trace(go.Scatter(x=gulf.Date,y=gulf['Policy Minimum (LCY)'],mode='lines',line=dict(color=COLORS['amber'],dash='dash'),name='Policy minimum')); fig.add_hline(y=0,line_color=COLORS['red'],line_width=2); fig.update_layout(height=430,hovermode='x unified',paper_bgcolor='white',plot_bgcolor='white',legend_orientation='h',yaxis_tickprefix='$',yaxis_tickformat=',.0f'); st.plotly_chart(fig,use_container_width=True)
+    st.markdown('#### Response choices')
+    x,y,z=st.columns(3)
+    if x.button('Use $50K local line',use_container_width=True): st.session_state.funding=50000; st.rerun()
+    if y.button('Request $500K intercompany transfer',use_container_width=True): st.session_state.funding=500000; st.rerun()
+    if z.button('Reset response',use_container_width=True): st.session_state.funding=0; st.rerun()
+    if st.button('Prepare CFO briefing →',type='primary'): st.session_state.step=5; st.rerun()
 
-elif page.startswith('5.'):
-    st.subheader('9:30 a.m. CFO Briefing')
-    scenario=st.selectbox('Briefing scenario',['Reported','Downside','Stress'],index=1)
-    s=summary[summary['Scenario']==scenario].iloc[0]
-    trough=pd.Timestamp(s['Trough Date']).strftime('%A, %B %d')
-    if s['Lowest Cash']<0: condition=f"a negative balance of ${abs(s['Lowest Cash']):,.0f}"
-    else: condition=f"a lowest available balance of ${s['Lowest Cash']:,.0f}"
-    st.markdown(f'''### Current position
-Consolidated liquidity remains positive, but Gulf Components is projected to reach **{condition} on {trough}** under the **{scenario}** scenario. The entity's operating-cash minimum is **$200,000**.
-
-### Primary driver
-The timing of the **$620,000 Orion Automotive receipt** determines whether the issue remains a policy-threshold breach or becomes a negative-balance event. Gulf Components also has concentrated payroll and supplier outflows during the forecast period.
-
-### Available response
-The reconciled Gulf Components local line provides **${s['Local Facility Available']:,.0f}** of availability. Additional company liquidity exists, but borrower, transfer, timing, and approval constraints must be considered before treating it as available to Gulf Components.
-
-### Decision required
-Authorize treasury to confirm the Orion receipt date and evaluate an approved funding action before the projected trough. Preserve all source assumptions and reviewer decisions in the audit trail.
-
-### Control note
-This briefing is generated from reviewed data and deterministic cash calculations. Forecast timing remains an assumption, and no transaction is executed by the tool.''')
-    text=f'''CFO LIQUIDITY BRIEFING\nScenario: {scenario}\n\nCurrent position: Gulf Components reaches {condition} on {trough}. Policy minimum: $200,000.\nPrimary driver: Timing of the $620,000 Orion Automotive receipt and concentrated payroll and supplier outflows.\nAvailable response: Reconciled local-line availability is ${s['Local Facility Available']:,.0f}. Other liquidity is subject to borrower, transfer, timing, and approval constraints.\nDecision required: Confirm receipt timing and authorize treasury to evaluate a funding response before the projected trough.\nControl note: Reviewed inputs and deterministic calculations; no transaction execution.\n'''
-    st.download_button('Download briefing as text',text,file_name=f'CFO_Liquidity_Briefing_{scenario}.txt')
+elif page=='CFO Briefing':
+    hero('STEP 4 | COMMUNICATE THE DECISION','9:30 CFO Briefing','A concise decision memo grounded in reviewed inputs and deterministic calculations.')
+    scenario=st.selectbox('Briefing basis',['Reported','Downside','Stress'],index=1); s=summaries.set_index('Scenario').loc[scenario]; trough=pd.Timestamp(s['Trough Date']).strftime('%A, %B %d')
+    st.markdown(f'''<div class="card"><div class="eyebrow">EXECUTIVE DECISION BRIEF</div><h3>Gulf Components liquidity exposure</h3><p><b>Situation.</b> Consolidated liquidity remains positive, but Gulf Components reaches {money(s['Lowest Cash'])} on {trough} under the {scenario} scenario, against a $200,000 operating minimum.</p><br><p><b>Primary driver.</b> The timing of the $620,000 Orion Automotive receipt determines whether the issue remains a policy breach or becomes a negative-balance event.</p><br><p><b>Available response.</b> Reconciled local-line capacity is {money(s['Local Facility Available'])}. Other available liquidity is subject to borrower, transfer, timing, and approval constraints.</p><br><p><b>Decision required.</b> Confirm the Orion receipt date and authorize treasury to arrange sufficient funding before the projected trough.</p></div>''',unsafe_allow_html=True)
+    st.markdown('### Before review vs. after review')
+    compare=pd.DataFrame({'Before treasury review':['Positive consolidated cash','$100,000 reported local availability','Orion receipt assumed on September 2','Restricted cash included','No explicit decision request'],'After treasury review':['Entity-level exposure identified','$50,000 reconciled local availability','Receipt timing treated as a scenario','Restricted cash excluded','Funding decision and approval identified']})
+    st.dataframe(compare,use_container_width=True,hide_index=True)
+    text=f'''CFO LIQUIDITY BRIEFING\nScenario: {scenario}\nGulf Components trough: {money(s['Lowest Cash'])} on {trough}.\nPolicy minimum: $200,000.\nPrimary driver: timing of the $620,000 Orion Automotive receipt.\nReconciled local-line availability: {money(s['Local Facility Available'])}.\nDecision: confirm receipt timing and authorize sufficient funding before the trough.\nControl: reviewed inputs and deterministic calculations; no transaction execution.\n'''
+    st.download_button('Download CFO briefing',text,file_name=f'CFO_Briefing_{scenario}.txt',type='primary')
 
 else:
-    st.subheader('Model Controls')
-    passed=int(checks['Pass'].sum()); total=len(checks)
-    c1,c2=st.columns(2); c1.metric('Checks passed',f'{passed} of {total}'); c2.metric('Workbook source','Uploaded revision' if uploaded else 'Bundled truth set')
+    hero('CONTROL LAYER','Model Controls','Transparent checks separating financial calculation from AI-assisted interpretation.')
+    passed=int(checks.Pass.sum()); total=len(checks); a,b,c=st.columns(3); a.metric('Checks passed',f'{passed}/{total}'); b.metric('Calculation method','Deterministic'); c.metric('Transactions executed','None')
     st.dataframe(checks,use_container_width=True,hide_index=True)
-    with st.expander('Canonical entities'): st.dataframe(ts.entities,use_container_width=True,hide_index=True)
     with st.expander('Approved FX rates'): st.dataframe(ts.fx,use_container_width=True,hide_index=True)
-    with st.expander('Facilities'): st.dataframe(ts.facilities,use_container_width=True,hide_index=True)
+    with st.expander('Liquidity facilities'): st.dataframe(ts.facilities,use_container_width=True,hide_index=True)
+    if st.button('Reset presentation'): st.session_state.clear(); st.rerun()
