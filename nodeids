@@ -1,0 +1,5 @@
+[
+  "tests/test_engine.py::test_baseline_and_storm",
+  "tests/test_engine.py::test_funding_helps",
+  "tests/test_engine.py::test_inbox_actual_files"
+]

@@ -1,69 +1,72 @@
 from __future__ import annotations
+from pathlib import Path
 import numpy as np
 import pandas as pd
 
-DATES = pd.date_range('2026-08-31', periods=10, freq='D')
-OPENING = 230_400.0
-MINIMUM = 200_000.0
-ORION = 620_000.0
-BASE_FLOWS = np.array([-85_000,-65_000,0,-410_000,-115_000,-90_000,5_000,-145_000,35_000,-30_000],dtype=float)
+DATES=pd.date_range('2026-08-31',periods=10,freq='D')
+OPENING=620000.0
+MINIMUM=200000.0
+ORION=620000.0
+BASE=np.array([-35000,-45000,0,-155000,-65000,-50000,15000,-75000,45000,-25000],float)
+REQUIRED_HISTORY=['date','opening_error','receipt_error','disbursement_error']
+STORMS=[
+('Opening cash revised',-25000,1.05,[.48,.32,.15,.05],0),
+('Orion timing challenged',-25000,1.15,[.18,.37,.32,.13],0),
+('Payments concentrate',-25000,1.25,[.18,.37,.32,.13],-90000),
+('Local line corrected',-25000,1.28,[.18,.35,.33,.14],-90000),
+('Transfer access constrained',-25000,1.38,[.10,.30,.40,.20],-90000)]
 
-STORMS = [
-    {'name':'Opening cash uncertainty','effect':'Widen opening-position error','cash_shift':-20_000,'flow_vol':1.10,'receipt_probs':[.40,.35,.20,.05],'extra_payment':0},
-    {'name':'Orion receipt challenged','effect':'Receipt timing becomes probabilistic','cash_shift':-20_000,'flow_vol':1.15,'receipt_probs':[.15,.35,.35,.15],'extra_payment':0},
-    {'name':'Payment concentration','effect':'Payroll and supplier pressure increases','cash_shift':-20_000,'flow_vol':1.25,'receipt_probs':[.15,.35,.35,.15],'extra_payment':-90_000},
-    {'name':'Funding capacity corrected','effect':'Local line reduced from $100K to $50K','cash_shift':-20_000,'flow_vol':1.25,'receipt_probs':[.15,.35,.35,.15],'extra_payment':-90_000},
-    {'name':'Liquidity access constrained','effect':'Restricted and parent cash unavailable without approval','cash_shift':-20_000,'flow_vol':1.35,'receipt_probs':[.10,.30,.40,.20],'extra_payment':-90_000},
-]
+def load_history(source):
+    name=getattr(source,'name',str(source)).lower()
+    df=pd.read_excel(source,engine='openpyxl') if name.endswith(('.xlsx','.xls')) else pd.read_csv(source)
+    missing=[c for c in REQUIRED_HISTORY if c not in df.columns]
+    if missing: raise ValueError('Historical file is missing: '+', '.join(missing))
+    df=df[REQUIRED_HISTORY].copy(); df['date']=pd.to_datetime(df.date,errors='coerce')
+    for c in REQUIRED_HISTORY[1:]: df[c]=pd.to_numeric(df[c],errors='coerce')
+    df=df.dropna()
+    if len(df)<60: raise ValueError('At least 60 complete historical observations are required.')
+    return df
 
-def historical_errors(seed=41, periods=180):
-    rng=np.random.default_rng(seed)
-    common=rng.standard_t(df=5,size=periods)*18_000
-    receipt=rng.normal(0,30_000,periods)+common
-    disb=rng.normal(0,22_000,periods)-.55*common
-    opening=rng.normal(0,12_000,periods)
-    return pd.DataFrame({'opening_error':opening,'receipt_error':receipt,'disbursement_error':disb})
-
-def deterministic_path(receipt_index=2, funding=0, extra_payment=0, cash_shift=0):
-    flows=BASE_FLOWS.copy(); flows[4]+=extra_payment
-    path=[]; cash=OPENING+cash_shift
-    for i,d in enumerate(DATES):
-        cash += flows[i] + (ORION if i==receipt_index else 0) + (funding if i==3 else 0)
-        path.append(cash)
-    return np.array(path)
-
-def simulate(stage=-1, n=5000, seed=77, funding=0):
-    hist=historical_errors(); rng=np.random.default_rng(seed+stage+1)
-    if stage<0:
-        cash_shift=0; vol=.85; probs=np.array([.62,.25,.10,.03]); extra=0
+def simulate(hist,stage=-1,n=3000,seed=77,funding=0):
+    rng=np.random.default_rng(seed+stage+1)
+    if stage<0: shift=0; vol=.62; probs=np.array([.72,.20,.07,.01]); extra=0
     else:
-        s=STORMS[stage]; cash_shift=s['cash_shift']; vol=s['flow_vol']; probs=np.array(s['receipt_probs']); extra=s['extra_payment']
-    receipt_days=np.array([2,4,8,11])
-    selected=rng.choice(receipt_days,size=n,p=probs)
-    sims=np.zeros((n,len(DATES)))
-    losses=np.zeros(n)
-    expected=deterministic_path(2,funding=funding,extra_payment=extra,cash_shift=cash_shift)
-    exp_trough=expected.min()
+        _,shift,vol,probs,extra=STORMS[stage]; probs=np.array(probs)
+    receipt_days=np.array([2,4,8,11]); selected=rng.choice(receipt_days,n,p=probs)
+    vals=hist[REQUIRED_HISTORY[1:]].to_numpy(); sims=np.zeros((n,10))
+    # deterministic reference trough for loss definition
+    ref=[]; c=OPENING+shift
+    for i in range(10): c+=BASE[i]+(ORION if i==2 else 0)+(extra if i==4 else 0)+(funding if i==3 else 0); ref.append(c)
+    ref_trough=min(ref); losses=np.zeros(n)
     for j in range(n):
-        sample=hist.sample(len(DATES),replace=True,random_state=int(rng.integers(0,2**31-1)))
-        errors=(sample.receipt_error.values+sample.disbursement_error.values)*vol
-        cash=OPENING+cash_shift+float(rng.choice(hist.opening_error.values))*vol
-        for i in range(len(DATES)):
+        idx=rng.integers(0,len(vals),10); sampled=vals[idx]; cash=OPENING+shift+sampled[0,0]*vol
+        for i in range(10):
+            err=(sampled[i,1]+sampled[i,2])*vol
             receipt=ORION if selected[j]==i else 0
-            cash += BASE_FLOWS[i]+errors[i]+receipt+(extra if i==4 else 0)+(funding if i==3 else 0)
-            sims[j,i]=cash
-        losses[j]=max(0,exp_trough-sims[j].min())
-    var=float(np.quantile(losses,.95)); tail=losses[losses>=var]; cvar=float(tail.mean()) if len(tail) else var
-    return {
-        'sims':sims,'expected':np.mean(sims,axis=0),'p025':np.quantile(sims,.025,axis=0),'p25':np.quantile(sims,.25,axis=0),
-        'p75':np.quantile(sims,.75,axis=0),'p975':np.quantile(sims,.975,axis=0),'var95':var,'cvar95':cvar,
-        'prob_below_min':float((sims.min(axis=1)<MINIMUM).mean()),'prob_negative':float((sims.min(axis=1)<0).mean()),
-        'troughs':sims.min(axis=1),'receipt_days':selected
-    }
+            cash+=BASE[i]+err+receipt+(extra if i==4 else 0)+(funding if i==3 else 0); sims[j,i]=cash
+        losses[j]=max(0,ref_trough-sims[j].min())
+    var=float(np.quantile(losses,.95)); tail=losses[losses>=var]
+    return {'sims':sims,'mean':sims.mean(0),'p025':np.quantile(sims,.025,0),'p25':np.quantile(sims,.25,0),'p75':np.quantile(sims,.75,0),'p975':np.quantile(sims,.975,0),'var':var,'cvar':float(tail.mean()),'pmin':float((sims.min(1)<MINIMUM).mean()),'pneg':float((sims.min(1)<0).mean())}
 
-def response_comparison(stage=4):
+def profile_attachment(path):
+    p=Path(path); out={'file':p.name,'type':p.suffix.lower(),'sheets':1,'rows':0,'columns':0,'notes':[]}
+    try:
+        if p.suffix.lower()=='.csv': df=pd.read_csv(p); frames={p.stem:df}
+        else:
+            x=pd.ExcelFile(p,engine='openpyxl'); frames={s:pd.read_excel(p,sheet_name=s,engine='openpyxl') for s in x.sheet_names}; out['sheets']=len(frames)
+        out['rows']=sum(len(x) for x in frames.values()); out['columns']=max([len(x.columns) for x in frames.values()] or [0])
+        cols=' '.join(str(c).lower() for f in frames.values() for c in f.columns)
+        if 'currency' in cols: out['notes'].append('Currency field detected')
+        if 'account' in cols: out['notes'].append('Account identifiers detected')
+        if 'date' in cols or 'day' in cols: out['notes'].append('Date structure detected')
+    except Exception as e: out['notes'].append('Parsing warning: '+str(e)[:60])
+    return out
+
+def process_inbox(folder):
+    return pd.DataFrame([profile_attachment(p) for p in sorted(Path(folder).glob('*')) if p.suffix.lower() in ['.csv','.xlsx','.xls']])
+
+def compare_responses(hist,stage=4):
     rows=[]
-    for name,funding in [('No action',0),('Local line',50_000),('Intercompany transfer',500_000),('Layered response',550_000)]:
-        r=simulate(stage=stage,funding=funding)
-        rows.append({'Response':name,'Funding':funding,'VaR 95%':r['var95'],'CVaR 95%':r['cvar95'],'P(Below Minimum)':r['prob_below_min'],'P(Negative)':r['prob_negative'],'Expected Trough':float(r['expected'].min())})
+    for label,f in [('No action',0),('Local line',50000),('Intercompany transfer',500000),('Layered response',550000)]:
+        r=simulate(hist,stage,funding=f); rows.append({'Response':label,'Funding':f,'VaR 95%':r['var'],'CVaR 95%':r['cvar'],'P(Below Minimum)':r['pmin'],'P(Negative)':r['pneg'],'Expected Trough':r['mean'].min()})
     return pd.DataFrame(rows)
