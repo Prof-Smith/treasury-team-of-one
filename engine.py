@@ -1,53 +1,69 @@
-from dataclasses import dataclass
+from __future__ import annotations
+import numpy as np
 import pandas as pd
 
-HEADER_ROW=3
-SHEETS=['Entities','Opening Balances','Approved FX','Facilities','Scenario Assumptions','Cash Flow Ledger','Accepted Treatments']
-@dataclass
-class TruthSet:
-    entities:pd.DataFrame; balances:pd.DataFrame; fx:pd.DataFrame; facilities:pd.DataFrame; scenarios:pd.DataFrame; ledger:pd.DataFrame; treatments:pd.DataFrame
+DATES = pd.date_range('2026-08-31', periods=10, freq='D')
+OPENING = 230_400.0
+MINIMUM = 200_000.0
+ORION = 620_000.0
+BASE_FLOWS = np.array([-85_000,-65_000,0,-410_000,-115_000,-90_000,5_000,-145_000,35_000,-30_000],dtype=float)
 
-def load_truth_set(source):
-    xls=pd.ExcelFile(source,engine='openpyxl'); missing=[s for s in SHEETS if s not in xls.sheet_names]
-    if missing: raise ValueError('Missing required sheets: '+', '.join(missing))
-    frames=[pd.read_excel(source,sheet_name=s,header=HEADER_ROW,engine='openpyxl').dropna(how='all') for s in SHEETS]
-    ts=TruthSet(*frames)
-    for d in [ts.entities,ts.balances,ts.ledger]: d['Entity ID']=d['Entity ID'].astype(str).str.strip()
-    for d,cols in [(ts.entities,['Min Operating Cash (LCY)']),(ts.balances,['Ledger Balance (LCY)','Available Balance (LCY)']),(ts.fx,['USD per LCY']),(ts.facilities,['Commitment','Drawn','Minimum Draw']),(ts.scenarios,['Orion Receipt Amount','Unplanned Gulf Payment Amount']),(ts.ledger,['Amount (LCY)'])]:
-        for c in cols:
-            if c in d: d[c]=pd.to_numeric(d[c],errors='coerce').fillna(0.)
-    ts.ledger['Date']=pd.to_datetime(ts.ledger['Date'],errors='coerce').dt.normalize()
-    for c in ['Orion Receipt Date','Unplanned Gulf Payment Date']: ts.scenarios[c]=pd.to_datetime(ts.scenarios[c],errors='coerce').dt.normalize()
-    ts.facilities['Calculated Available']=(ts.facilities.Commitment-ts.facilities.Drawn).clip(lower=0)
-    return ts
+STORMS = [
+    {'name':'Opening cash uncertainty','effect':'Widen opening-position error','cash_shift':-20_000,'flow_vol':1.10,'receipt_probs':[.40,.35,.20,.05],'extra_payment':0},
+    {'name':'Orion receipt challenged','effect':'Receipt timing becomes probabilistic','cash_shift':-20_000,'flow_vol':1.15,'receipt_probs':[.15,.35,.35,.15],'extra_payment':0},
+    {'name':'Payment concentration','effect':'Payroll and supplier pressure increases','cash_shift':-20_000,'flow_vol':1.25,'receipt_probs':[.15,.35,.35,.15],'extra_payment':-90_000},
+    {'name':'Funding capacity corrected','effect':'Local line reduced from $100K to $50K','cash_shift':-20_000,'flow_vol':1.25,'receipt_probs':[.15,.35,.35,.15],'extra_payment':-90_000},
+    {'name':'Liquidity access constrained','effect':'Restricted and parent cash unavailable without approval','cash_shift':-20_000,'flow_vol':1.35,'receipt_probs':[.10,.30,.40,.20],'extra_payment':-90_000},
+]
 
-def calculate_forecast(ts,funding_actions=None,custom=None):
-    funding_actions=funding_actions or {}; custom=custom or {}
-    dates=pd.date_range(ts.ledger.Date.min(),ts.ledger.Date.max(),freq='D')
-    net=ts.ledger.groupby(['Entity ID','Date'])['Amount (LCY)'].sum()
-    opening=ts.balances.groupby('Entity ID')['Available Balance (LCY)'].sum().to_dict()
-    entities=ts.entities.set_index('Entity ID'); fx=ts.fx.set_index('Currency')['USD per LCY'].to_dict(); rows=[]
-    for _,src in ts.scenarios.iterrows():
-        sc=src.copy(); name=str(sc.Scenario)
-        if name in custom:
-            for k,v in custom[name].items(): sc[k]=v
-        for eid,e in entities.iterrows():
-            cash=float(opening.get(eid,0))
-            for d in dates:
-                flow=float(net.get((eid,d),0)); receipt=0.; shock=0.
-                if eid=='E004' and pd.notna(sc['Orion Receipt Date']) and d==pd.Timestamp(sc['Orion Receipt Date']): receipt=float(sc['Orion Receipt Amount'])
-                if eid=='E004' and pd.notna(sc['Unplanned Gulf Payment Date']) and d==pd.Timestamp(sc['Unplanned Gulf Payment Date']): shock=-float(sc['Unplanned Gulf Payment Amount'])
-                fund=float(funding_actions.get(f'{name}|{eid}|{d.date().isoformat()}',0)); end=cash+flow+receipt+shock+fund; minimum=float(e['Min Operating Cash (LCY)'])
-                status='NEGATIVE' if end<0 else ('BELOW MINIMUM' if end<minimum else 'OK')
-                rows.append({'Scenario':name,'Date':d,'Entity ID':eid,'Entity':e['Canonical Entity'],'Currency':e.Currency,'Opening':cash,'Net Flow':flow,'Receipt':receipt,'Shock':shock,'Funding':fund,'Ending':end,'Minimum':minimum,'Surplus':end-minimum,'Ending USD':end*float(fx.get(e.Currency,1)),'Status':status}); cash=end
+def historical_errors(seed=41, periods=180):
+    rng=np.random.default_rng(seed)
+    common=rng.standard_t(df=5,size=periods)*18_000
+    receipt=rng.normal(0,30_000,periods)+common
+    disb=rng.normal(0,22_000,periods)-.55*common
+    opening=rng.normal(0,12_000,periods)
+    return pd.DataFrame({'opening_error':opening,'receipt_error':receipt,'disbursement_error':disb})
+
+def deterministic_path(receipt_index=2, funding=0, extra_payment=0, cash_shift=0):
+    flows=BASE_FLOWS.copy(); flows[4]+=extra_payment
+    path=[]; cash=OPENING+cash_shift
+    for i,d in enumerate(DATES):
+        cash += flows[i] + (ORION if i==receipt_index else 0) + (funding if i==3 else 0)
+        path.append(cash)
+    return np.array(path)
+
+def simulate(stage=-1, n=5000, seed=77, funding=0):
+    hist=historical_errors(); rng=np.random.default_rng(seed+stage+1)
+    if stage<0:
+        cash_shift=0; vol=.85; probs=np.array([.62,.25,.10,.03]); extra=0
+    else:
+        s=STORMS[stage]; cash_shift=s['cash_shift']; vol=s['flow_vol']; probs=np.array(s['receipt_probs']); extra=s['extra_payment']
+    receipt_days=np.array([2,4,8,11])
+    selected=rng.choice(receipt_days,size=n,p=probs)
+    sims=np.zeros((n,len(DATES)))
+    losses=np.zeros(n)
+    expected=deterministic_path(2,funding=funding,extra_payment=extra,cash_shift=cash_shift)
+    exp_trough=expected.min()
+    for j in range(n):
+        sample=hist.sample(len(DATES),replace=True,random_state=int(rng.integers(0,2**31-1)))
+        errors=(sample.receipt_error.values+sample.disbursement_error.values)*vol
+        cash=OPENING+cash_shift+float(rng.choice(hist.opening_error.values))*vol
+        for i in range(len(DATES)):
+            receipt=ORION if selected[j]==i else 0
+            cash += BASE_FLOWS[i]+errors[i]+receipt+(extra if i==4 else 0)+(funding if i==3 else 0)
+            sims[j,i]=cash
+        losses[j]=max(0,exp_trough-sims[j].min())
+    var=float(np.quantile(losses,.95)); tail=losses[losses>=var]; cvar=float(tail.mean()) if len(tail) else var
+    return {
+        'sims':sims,'expected':np.mean(sims,axis=0),'p025':np.quantile(sims,.025,axis=0),'p25':np.quantile(sims,.25,axis=0),
+        'p75':np.quantile(sims,.75,axis=0),'p975':np.quantile(sims,.975,axis=0),'var95':var,'cvar95':cvar,
+        'prob_below_min':float((sims.min(axis=1)<MINIMUM).mean()),'prob_negative':float((sims.min(axis=1)<0).mean()),
+        'troughs':sims.min(axis=1),'receipt_days':selected
+    }
+
+def response_comparison(stage=4):
+    rows=[]
+    for name,funding in [('No action',0),('Local line',50_000),('Intercompany transfer',500_000),('Layered response',550_000)]:
+        r=simulate(stage=stage,funding=funding)
+        rows.append({'Response':name,'Funding':funding,'VaR 95%':r['var95'],'CVaR 95%':r['cvar95'],'P(Below Minimum)':r['prob_below_min'],'P(Negative)':r['prob_negative'],'Expected Trough':float(r['expected'].min())})
     return pd.DataFrame(rows)
-
-def scenario_summary(fc,ts):
-    local=float(ts.facilities.loc[ts.facilities['Borrower Entity ID'].astype(str)=='E004','Calculated Available'].sum()); out=[]
-    for name,g in fc[fc['Entity ID']=='E004'].groupby('Scenario',sort=False):
-        r=g.loc[g.Ending.idxmin()]; out.append({'Scenario':name,'Trough':float(r.Ending),'Date':r.Date,'Status':r.Status,'Policy Gap':float(r.Surplus),'Local Line':local,'Days At Risk':int((g.Status!='OK').sum())})
-    return pd.DataFrame(out)
-
-def checks(ts,fc):
-    vals=[('Unique account IDs',not ts.balances['Account ID'].duplicated().any()),('Restricted cash excluded',ts.balances.loc[ts.balances['Restricted?'].eq('Y'),'Available Balance (LCY)'].sum()==0),('Facilities reconcile',((ts.facilities.Commitment-ts.facilities.Drawn-ts.facilities['Calculated Available']).abs()<.01).all()),('Forecast dates complete',fc.Date.notna().all())]
-    return pd.DataFrame(vals,columns=['Control','Pass'])
