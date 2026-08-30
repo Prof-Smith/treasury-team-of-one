@@ -222,7 +222,8 @@ elif page=='Human Review':
   {'issue':'Duplicate Payroll','impact':'$245K possible outflow duplication','proposal':'Retain one verified payment','entity':'Gulf Components','sender':'Shared Services','subject':'AP and payroll schedule','file':'Apex_Disbursements.csv','raw':'Gulf payroll of $245,000 appears under two entity aliases.','finding':'Potential duplicate payroll record.','confidence':'97%'},
   {'issue':'Facility Mismatch','impact':'$50K liquidity overstatement','proposal':'Use commitment less drawn: $50K available','entity':'Gulf Components','sender':'Bank Partner','subject':'Facility availability','file':'Facilities.xlsx','raw':'Commitment $500K; drawn $450K; reported availability $100K.','finding':'Reconciled availability is $50K.','confidence':'100%'},
   {'issue':'FX Inconsistencies','impact':'Translation variance','proposal':'Use the approved treasury rate','entity':'Meridian Canada','sender':'Canada Controller','subject':'CAD forecast using Friday FX','file':'Canada_CAD.xlsx','raw':'The entity forecast uses conversion rate 0.742.','finding':'The local rate requires comparison with the approved treasury feed.','confidence':'91%'}]
- i=min(st.session_state.reviewed,6);e=evidence[i]
+i=min(st.session_state.reviewed, len(evidence) - 1)
+e=evidence[i]
  st.markdown(f'<div class="panel"><div class="eyebrow">REVIEW {i+1} OF 6</div><h3>{e["issue"]}</h3><p><b>Potential Impact:</b> {e["impact"]}<br><b>Agent Proposal:</b> {e["proposal"]}</p></div>',unsafe_allow_html=True)
  a,b,c=st.columns(3)
  if a.button('Accept',type='primary',use_container_width=True):st.session_state.reviewed=min(6,i+1);st.session_state.inspect=False;st.rerun()
